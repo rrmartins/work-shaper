@@ -241,5 +241,6 @@ module WorkShaper
     def block_partition(partition)
       @partition_blocks ||= {}
       @partition_blocks[partition] ||= Time.now
+    end
   end
 end
