@@ -17,7 +17,12 @@ module WorkShaper
       @completed_offsets = offset_stack
       @semaphore = semaphore
       @max_in_queue = max_in_queue
-      @thread_pool = Concurrent::FixedThreadPool.new(1, auto_terminate: false)
+      @thread_pool = Concurrent::FixedThreadPool.new(
+        ENV.fetch('WORKSHAPER_WORKER_THREADS_POOL_SIZE', 10).to_i,
+        auto_terminate: false,
+        max_queue: ENV.fetch('WORKSHAPER_WORKER_QUEUE_SIZE', 100).to_i,
+        fallback_policy: :caller_runs
+      )
     end
 
     # rubocop:enable Metrics/ParameterLists
