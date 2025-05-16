@@ -31,6 +31,10 @@ module WorkShaper
 
       @total_enqueued = 0
 
+      @partition_failures = Hash.new { |h, k| h[k] = 0 }
+      @max_partition_failures = ENV.fetch('WORKSHAPER_MAX_PARTITION_FAILURES', 5).to_i
+      @partition_backoff_time = ENV.fetch('WORKSHAPER_PARTITION_BACKOFF_TIME', 30).to_i
+
       @heartbeat = Thread.new do
         while true
           report
@@ -57,6 +61,15 @@ module WorkShaper
     # Enqueue a message to be worked on the given `sub_key`, `partition`, and `offset`.
     def enqueue(sub_key, message, partition, offset)
       raise StandardError, 'Shutting down' if @shutdown
+
+      if partition_blocked?(partition)
+        WorkShaper.logger.warn({
+          message: 'Partition blocked',
+          partition: partition,
+          failures: @partition_failures[partition],
+        })
+      end
+
       pause_on_overrun
 
       worker = nil
@@ -79,6 +92,12 @@ module WorkShaper
       end
 
       worker.enqueue(message, partition, offset)
+    rescue => e
+      @partition_failures[partition] += 1
+      if @partition_failures[partition] >= @max_partition_failures
+        block_partition(partition)
+      end
+      raise e
     end
 
     # Flush any offsets for which work has been completed. Only lowest continuous run of
@@ -94,13 +113,15 @@ module WorkShaper
     # Output state of Last Acked and Pending Offset Ack's.
     def report(detailed: false)
       @semaphore.synchronize do
-        WorkShaper.logger.info(
-          { message: 'Reporting', total_enqueued: @total_enqueued,
-            total_acked: @total_acked,
-            in_flight: (@total_enqueued.to_i - @total_acked.to_i),
-            last_acked_offsets: @last_ack,
-            worker_count: @workers.keys.count
-          })
+        WorkShaper.logger.info({
+          message: 'Reporting',
+          total_enqueued: @total_enqueued,
+          total_acked: @total_acked,
+          in_flight: (@total_enqueued.to_i - @total_acked.to_i),
+          last_acked_offsets: @last_ack,
+          worker_count: @workers.keys.count,
+          partition_stats: gather_partition_stats
+        })
         if detailed
           WorkShaper.logger.info(
             {
@@ -130,42 +151,67 @@ module WorkShaper
     end
 
     def offset_ack_unsafe(partition)
-      @total_acked ||= 0
+      retry_count = 0
+      max_retries = ENV.fetch('WORKSHAPER_MAX_RETRIES', 10).to_i
 
-      completed = @completed_offsets[partition]
-      received = @received_offsets[partition]
+      begin
+        @total_acked ||= 0
 
-      offset = completed.first
-      while received.any? && received.first == offset
-        # We observed Kafka sending the same message twice, even after
-        # having committed the offset. Here we skip this offset if we
-        # know it has already been committed.
-        last_offset = @last_ack[partition]
-        if last_offset && offset <= last_offset
-          WorkShaper.logger.warn(
-            { message: 'Received Dupilcate Offset',
-              offset: "#{partition}:#{offset}"
-            })
-        else
-          result = @ack.call(partition, offset)
-          if result.is_a? Exception
-            WorkShaper.logger.warn(
-              { message: 'Failed to Ack Offset, likely re-balance',
-                offset: "#{partition}:#{offset}",
-                completed: @completed_offsets[partition].to_a[0..10].join(','),
-                received: @received_offsets[partition].to_a[0..10].join(',')
-              })
-          else
-            @total_acked += 1
-            @last_ack[partition] = offset
-          end
-        end
-
-        completed.delete(offset)
-        received.delete(offset)
+        completed = @completed_offsets[partition]
+        received = @received_offsets[partition]
 
         offset = completed.first
+        while received.any? && received.first == offset
+          result = @ack.call(partition, offset)
+
+          if result.is_a?(Exception)
+            if retry_count < max_retries
+              retry_count += 1
+              sleep(0.1 * retry_count) # Backoff exponencial
+              next
+            end
+
+            WorkShaper.logger.error({
+              event: 'partition_ack_failure',
+              partition: partition,
+              offset: offset,
+              error: result.message,
+              retry_count: retry_count
+            })
+
+            raise result
+          end
+
+          @total_acked += 1
+          @last_ack[partition] = offset
+
+          completed.delete(offset)
+          received.delete(offset)
+          offset = completed.first
+        end
+      rescue StandardError => e
+        WorkShaper.logger.error({
+          event: 'partition_processing_error',
+          partition: partition,
+          error: e.message,
+          backtrace: e.backtrace.join("\n")
+        })
+        raise e
       end
+    end
+
+    def gather_partition_stats
+      stats = {}
+      @received_offsets.each do |partition, offsets|
+        stats[partition] = {
+          received_count: offsets.size,
+          last_processed: @last_ack[partition],
+          completed_count: (@completed_offsets[partition] || []).size,
+          failure_count: @partition_failures[partition],
+          blocked: partition_blocked?(partition)
+        }
+      end
+      stats
     end
 
     def pause_on_overrun
@@ -179,5 +225,21 @@ module WorkShaper
       # to wrap up.
       sleep 0.005 while @semaphore.synchronize { overrun.call }
     end
+
+    def partition_blocked?(partition)
+      @partition_blocks ||= {}
+      return false unless @partition_blocks[partition]
+
+      if Time.now - @partition_blocks[partition] > @partition_backoff_time
+        @partition_blocks.delete(partition)
+        @partition_failures[partition] = 0
+        return false
+      end
+      true
+    end
+
+    def block_partition(partition)
+      @partition_blocks ||= {}
+      @partition_blocks[partition] ||= Time.now
   end
 end
