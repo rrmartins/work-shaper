@@ -25,6 +25,13 @@ If bundler is not being used to manage dependencies, install the gem by executin
 
 ## Usage
 
+### Suggested environment variables list
+  - WORKSHAPER_WORKER_THREADS_POOL_SIZE = 10
+  - WORKSHAPER_WORKER_QUEUE_SIZE = 100
+  - WORKSHAPER_MAX_PARTITION_FAILURES = 5
+  - WORKSHAPER_PARTITION_BACKOFF_TIME = 30
+  - WORKSHAPER_MAX_RETRIES = 10
+
 ### Example
 
 ```ruby
@@ -66,7 +73,7 @@ work_shaper = WorkShaper::Manager.new(work, done, ack, error, max_in_queue)
 max_sub_keys = ENV.fetch('MAX_SUB_KEYS', 100)
 consumer.each_message do |message|
   break if @fatal_error
-  
+
   sub_key = @value_to_subkey[message.payload['some attribute']] ||=
     MurmurHash3::V32.str_hash(message.payload['some attribute']) % max_sub_keys
 
