@@ -20,8 +20,7 @@ module WorkShaper
     @logger ||= Logger.new(
       $stdout,
       level: ENV['LOG_LEVEL'] || 'DEBUG',
-      formatter: Ruby::JSONFormatter::Base.new
+      formatter: ::Ruby::JSONFormatter::Base.new
     )
   end
 end
-
