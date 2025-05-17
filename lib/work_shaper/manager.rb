@@ -3,7 +3,7 @@ module WorkShaper
   # for each offset in monotonically increasing order (independent of the execution order), and gracefully
   # cleaning up when `#shutdown` is called.
   class Manager
-    include ::LoggerFactory
+    include LoggerFactory
     # Several of the parameters here are Lambdas (not Proc). Note you can pass a method using
     # `method(:some_method)` or a lambda directly `->{ puts 'Hello'}`.
     #
