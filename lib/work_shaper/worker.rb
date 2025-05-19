@@ -20,7 +20,7 @@ module WorkShaper
       @thread_pool = Concurrent::FixedThreadPool.new(
         ENV.fetch('WORKSHAPER_WORKER_THREADS_POOL_SIZE', 10).to_i,
         auto_terminate: false,
-        max_queue: ENV.fetch('WORKSHAPER_WORKER_QUEUE_SIZE', 100).to_i,
+        max_queue: ENV.fetch('WORKSHAPER_WORKER_QUEUE_SIZE', 1000).to_i,
         fallback_policy: :caller_runs
       )
     end
@@ -29,32 +29,73 @@ module WorkShaper
     # rubocop:enable Layout/LineLength
 
     def enqueue(message, partition, offset)
-      # rubocop:disable Style/RescueStandardError
       @thread_pool.post do
-        ActiveRecord::Base.connection_pool.with_connection do
-          @work.call(message, partition, offset)
-          @on_done.call(message, partition, offset)
-          @semaphore.synchronize do
-            (@completed_offsets[partition] ||= SortedSet.new) << offset
+        begin
+          ActiveRecord::Base.connection_pool.with_connection do
+            start_time = Time.now
+
+            @work.call(message, partition, offset)
+            @on_done.call(message, partition, offset)
+
+            @semaphore.synchronize do
+              (@completed_offsets[partition] ||= SortedSet.new) << offset
+            end
+
+            WorkShaper.logger.info({
+              event: 'message_processed',
+              partition: partition,
+              offset: offset,
+              processing_time: Time.now - start_time
+            })
           end
+        rescue StandardError => e
+          WorkShaper.logger.error({
+            event: 'message_processing_error',
+            partition: partition,
+            offset: offset,
+            error: e.message,
+            backtrace: e.backtrace[0..5]
+          })
+
+          @on_error.call(e, message, partition, offset)
+
+          retry_count = 0
+          max_retries = ENV.fetch('WORKSHAPER_MESSAGE_MAX_RETRIES', 3).to_i
+
+          if retry_count < max_retries
+            retry_count += 1
+            sleep(0.1 * retry_count) # Backoff exponencial
+            retry
+          end
+        ensure
+          ActiveRecord::Base.connection_pool.release_connection if ActiveRecord::Base.connection_pool
         end
-        # @ack_handler.call(partition, offset)
-      rescue => e
-        puts("Error processing #{partition}:#{offset} #{e}")
-        puts(e.backtrace.join("\n"))
-        # logger.error("Acking it anyways, why not?")
-        @on_error.call(e, message, partition, offset)
-        # @ack_handler.call(partition, offset)
       end
-      # rubocop:enable Style/RescueStandardError
+    rescue Concurrent::RejectedExecutionError => e
+      WorkShaper.logger.error({
+        event: 'thread_pool_rejected',
+        partition: partition,
+        offset: offset,
+        error: e.message
+      })
+      raise e
     end
 
     def shutdown
-      # Cannot call logger from trap{}
-      WorkShaper.logger.info({message: 'Shutting down worker'})
+      WorkShaper.logger.info({ event: 'worker_shutdown_started' })
+
       @thread_pool.shutdown
-      @thread_pool.wait_for_termination
-      sleep 0.05 while @thread_pool.queue_length.positive?
+
+      timeout = ENV.fetch('WORKSHAPER_SHUTDOWN_TIMEOUT', 30).to_i
+      if @thread_pool.wait_for_termination(timeout)
+        WorkShaper.logger.info({ event: 'worker_shutdown_completed' })
+      else
+        WorkShaper.logger.warn({
+          event: 'worker_shutdown_timeout',
+          remaining_tasks: @thread_pool.queue_length
+        })
+        @thread_pool.kill
+      end
     end
 
     private
