@@ -31,10 +31,12 @@ module WorkShaper
     def enqueue(message, partition, offset)
       # rubocop:disable Style/RescueStandardError
       @thread_pool.post do
-        @work.call(message, partition, offset)
-        @on_done.call(message, partition, offset)
-        @semaphore.synchronize do
-          (@completed_offsets[partition] ||= SortedSet.new) << offset
+        ActiveRecord::Base.connection_pool.with_connection do
+          @work.call(message, partition, offset)
+          @on_done.call(message, partition, offset)
+          @semaphore.synchronize do
+            (@completed_offsets[partition] ||= SortedSet.new) << offset
+          end
         end
         # @ack_handler.call(partition, offset)
       rescue => e
