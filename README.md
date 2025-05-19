@@ -27,10 +27,13 @@ If bundler is not being used to manage dependencies, install the gem by executin
 
 ### Suggested environment variables list
   - WORKSHAPER_WORKER_THREADS_POOL_SIZE = 10
-  - WORKSHAPER_WORKER_QUEUE_SIZE = 100
+  - WORKSHAPER_WORKER_QUEUE_SIZE = 1000
   - WORKSHAPER_MAX_PARTITION_FAILURES = 5
   - WORKSHAPER_PARTITION_BACKOFF_TIME = 30
   - WORKSHAPER_MAX_RETRIES = 10
+  - WORKSHAPER_MESSAGE_MAX_RETRIES = 3
+  - WORKSHAPER_SHUTDOWN_TIMEOUT = 30
+
 
 ### Example
 
