@@ -1,4 +1,4 @@
-require_relative 'work_shaper/worker'
+require 'worker'
 
 module WorkShaper
   # The Manager is responsible for organizing the work to be done, triggering calls to acknowledge work done
@@ -81,7 +81,7 @@ module WorkShaper
 
         worker =
           @workers[sub_key] ||=
-            Worker.new(
+            ::Worker.new(
               @work,
               @on_done,
               method(:offset_ack),
