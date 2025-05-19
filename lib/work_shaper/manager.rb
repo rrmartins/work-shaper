@@ -1,3 +1,5 @@
+require_relative 'work_shaper/worker'
+
 module WorkShaper
   # The Manager is responsible for organizing the work to be done, triggering calls to acknowledge work done
   # for each offset in monotonically increasing order (independent of the execution order), and gracefully
